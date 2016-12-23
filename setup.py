@@ -7,6 +7,6 @@ setup(name='AwsLogUtil',
         author='Thomas Petersen',
         author_email='petersen@temp.dk',
         license='MIT',
-        packages=['AwsLogUtils'],
+        packages=['AwsLogUtil'],
         zip_safe=False)
 
