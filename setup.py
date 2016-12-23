@@ -1,6 +1,6 @@
 from setuptools import setup
 
-setup(name='AwsLogUtils',
+setup(name='AwsLogUtil',
         version='0.01',
         description='Library to help downloading and parsing logs from AWS ELB',
         url='https://github.com/CurryEleison/AwsElbLogUtil',
