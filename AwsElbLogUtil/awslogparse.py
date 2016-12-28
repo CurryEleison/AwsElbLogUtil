@@ -90,7 +90,7 @@ class LogFileList:
 
     def __init__(self, s3res, account = None, region = 'eu-west-1', 
             bucket = "123logging", minimumfiles = 5, strictreftime = False):
-        self.account = account if account != None else self.get_awsacctno()
+        self.account = account if account != None else boto3.client('sts').get_caller_identity()['Account']
         self.region = region
         self.minimumfiles = minimumfiles
         self.s3res = s3res
@@ -125,12 +125,12 @@ class LogFileList:
         recents = [x for ind, x in enumerate(allitems) if self.minimumfiles > ind >= 0 ]
         return recents
 
-    def get_awsacctno(self):
-        metadata = json.loads(urllib2.urlopen('http://169.254.169.254/latest/meta-data/iam/info/').read())
-        arn = metadata['InstanceProfileArn']
-        elts = arn.split(':')
-        acctno =  elts[4]
-        return acctno
+#    def get_awsacctno(self):
+#        metadata = json.loads(urllib2.urlopen('http://169.254.169.254/latest/meta-data/iam/info/').read())
+#        arn = metadata['InstanceProfileArn']
+#        elts = arn.split(':')
+#        acctno =  elts[4]
+#        return acctno
 
 
 # A UTC class. From tzinfo docs
