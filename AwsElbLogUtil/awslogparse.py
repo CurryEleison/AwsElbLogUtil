@@ -1,6 +1,7 @@
 import boto3
 import os
-import StringIO
+from io import BytesIO
+
 from datetime import tzinfo, datetime, timedelta
 import csv
 import pandas as pd
@@ -9,6 +10,7 @@ from urlparse import urlparse
 import hashlib
 import urllib2
 import json
+import gzip
 
 ZERO = timedelta(0)
 
@@ -17,36 +19,51 @@ ZERO = timedelta(0)
 class LogDataFrame:
     """LogDataFrame"""
 
-    def __init__(self, s3res ):
+    def __init__(self, s3res, loglineclass = None):
         self.s3res = s3res
+        self.ctor = loglineclass if loglineclass != None else LogLine
+        self.delimiter = self.ctor.get_delimiter()
+        self.commenter = self.ctor.get_isdataline()
+        self.gzipped = self.ctor.get_gzipped()
 
     # Maybe add an argument to exclude lines. Perhaps a lambda that takes 
     # a LogLine object and returns a bool or something to scan a string and return a bool
     def make_dataframe(self, s3items, loglinefilter=None):
         loglines = []
+        s3client = boto3.client('s3')
         for s3objsummary in s3items:
-            s3obj = self.s3res.Object(s3objsummary.bucket_name, s3objsummary.key)
-            buf = StringIO.StringIO()
-            s3obj.download_fileobj(buf)
-            buf.seek(0)
-            self.append_lines(buf, loglines, loglinefilter)
-            buf.close()
+            # Had real trouble using download_life
+            s3obj = s3client.get_object(Bucket = s3objsummary.bucket_name, Key = s3objsummary.key)
+            bytestream = BytesIO(s3obj['Body'].read())
+            bf = gzip.GzipFile(None, 'rb', fileobj=bytestream) if self.gzipped else bytestream
+            bf.seek(0)
+            self.append_lines(bf, loglines, loglinefilter)
+            bf.close()
+            if not bytestream.closed:
+                bytestream.close()
         return self.get_df_from_loglines(loglines)
 
     def make_dataframe_fromfolder(self, foldername, loglinefilter=None):
+        opener = gzip.open if self.gzipped else open
         fullfoldername = os.path.expanduser(foldername)
         if os.path.exists(fullfoldername):
-            loglines = []
+            loglines = [] 
             filelist = [f for f in os.listdir(fullfoldername) if os.path.isfile(os.path.join(fullfoldername, f))]
-            for filename in filelist:
-                with open(os.path.join(fullfoldername, filename), 'rb') as buf:
+            for filename in filelist: 
+                print filename
+                with opener(os.path.join(fullfoldername, filename), 'rb') as buf:
                     self.append_lines(buf, loglines, loglinefilter)
-            return self.get_df_from_loglines(loglines)
+                return self.get_df_from_loglines(loglines)
+
+
 
     def append_lines(self, f, loglines, loglinefilter):
-        csvreader = csv.reader(f, delimiter = ' ', quotechar = '"')
+        ctor = self.ctor
+        cmts = self.commenter
+        delim = self.delimiter
+        csvreader = csv.reader(filter(cmts, f), delimiter = delim, quotechar = '"')
         for row in csvreader:
-            l = LogLine(row)
+            l = ctor(row)
             if ((loglinefilter == None) or (loglinefilter(l) == True)):
                 loglines.append(l)
 
@@ -90,14 +107,30 @@ class LogFileList:
 
     def __init__(self, s3res, account = None, region = 'eu-west-1', 
             bucket = "123logging", minimumfiles = 5, strictreftime = False):
-        self.account = account if account != None else boto3.client('sts').get_caller_identity()['Account']
+        self.account = account if account != None else self.get_awsacctno()
         self.region = region
         self.minimumfiles = minimumfiles
         self.s3res = s3res
         self.bucket = bucket
         self.strictreftime = strictreftime
 
-    def get_recents(self, lbname, refdate=None, lblogfolder = None):
+    def get_recents_cloudfront(self, distribution, refdate=None, cflogfolder = None):
+        folderprefix = (cflogfolder + "/") if cflogfolder != None else ""
+        def prefix(dt): return "{foldpref}{filepref}.{dt.year:0>4}-{dt.month:0>2}-{dt.day:0>2}-{dt.hour:0>2}".format(dt = dt, foldpref = folderprefix, filepref = distribution)
+        return self.get_recents(prefix, refdate)
+
+
+    def get_recents_elb(self, lbname, refdate=None, lblogfolder = None):
+        logfolder = lblogfolder if lblogfolder != None else lbname
+        s3foldertemplate = "loadbalancers/{loadbalancer}/AWSLogs/{account}/elasticloadbalancing/{region}/{dt.year:0>4}/{dt.month:0>2}/{dt.day:0>2}/"
+        s3filekeyroottemplate = "{account}_elasticloadbalancing_{region}_{loadbalancer}_{dt.year:0>4}{dt.month:0>2}{dt.day:0>2}T{dt.hour:0>2}"
+        def folderpref(dt): return s3foldertemplate.format(dt = dt, loadbalancer = logfolder, account = self.account, region = self.region)
+        def filepref(dt): return s3filekeyroottemplate.format(dt = dt, loadbalancer = lbname, account = self.account, region = self.region )
+        def prefix(dt): return folderpref(dt) + filepref(dt)
+        return self.get_recents(prefix, refdate)
+
+
+    def get_recents(self, prefixer, refdate=None):
         utc = UTC()
         allitems = []
         checkedkeys = set()
@@ -105,32 +138,23 @@ class LogFileList:
         maxiterations = 500
         tenminspast = timedelta(minutes=-10)
         starttime = refdate if refdate != None else datetime.now(utc) 
-        logfolder = lblogfolder if lblogfolder != None else lbname
         mytime = starttime
-        s3foldertemplate = "loadbalancers/{loadbalancer}/AWSLogs/{account}/elasticloadbalancing/{region}/{dt.year:0>4}/{dt.month:0>2}/{dt.day:0>2}/"
-        s3filekeyroottemplate = "{account}_elasticloadbalancing_{region}_{loadbalancer}_{dt.year:0>4}{dt.month:0>2}{dt.day:0>2}T{dt.hour:0>2}"
         while (len(allitems) <= self.minimumfiles and iterations < maxiterations):
-            folderprefix = s3foldertemplate.format(dt = mytime, loadbalancer = logfolder, account = self.account, region = self.region) 
-            itemprefix = s3filekeyroottemplate.format(dt = mytime, loadbalancer = lbname, account = self.account, region = self.region )
-            fullprefix = folderprefix + itemprefix
+            fullprefix = prefixer(mytime)
             if (fullprefix not in checkedkeys):
                 print fullprefix
                 bucket = self.s3res.Bucket(self.bucket)
-                allitems.extend( filter( lambda item: (self.strictreftime == False) or (refdate == None) or (item.last_modified < refdate), sorted( bucket.objects.filter(Prefix=folderprefix + itemprefix), key = lambda item: item.last_modified, reverse=True)))
+                allitems.extend( filter( lambda item: (self.strictreftime == False) or (refdate == None) or (item.last_modified < refdate), sorted( bucket.objects.filter(Prefix=fullprefix), key = lambda item: item.last_modified, reverse=True)))
                 checkedkeys.add(fullprefix)
             iterations += 1
             mytime += tenminspast
-            
-
         recents = [x for ind, x in enumerate(allitems) if self.minimumfiles > ind >= 0 ]
         return recents
 
-#    def get_awsacctno(self):
-#        metadata = json.loads(urllib2.urlopen('http://169.254.169.254/latest/meta-data/iam/info/').read())
-#        arn = metadata['InstanceProfileArn']
-#        elts = arn.split(':')
-#        acctno =  elts[4]
-#        return acctno
+    def get_awsacctno(self):
+        client = boto3.client("sts")
+        account_id = client.get_caller_identity()["Account"]
+        return account_id
 
 
 # A UTC class. From tzinfo docs
@@ -150,6 +174,18 @@ class UTC(tzinfo):
 class LogLine:
     """LogLine"""
 
+    @staticmethod
+    def get_delimiter():
+        return ' '
+
+    @staticmethod
+    def get_gzipped():
+        return False
+
+    @staticmethod
+    def get_isdataline():
+        return lambda row: True
+
     def __init__(self, fields):
         self.utctime = datetime.strptime(fields[0], '%Y-%m-%dT%H:%M:%S.%fZ')
         self.loadbalancer = fields[1]
@@ -161,7 +197,9 @@ class LogLine:
         self.time1 = float(fields[4])
         self.servertime = float(fields[5])
         self.time2 = float(fields[6])
+        self.timetaken = (self.time1 + self.servertime + self.time2) if self.servertime > 0 else self.servertime
         self.responsecode = int(fields[7])
+        self.responsebytes = int(fields[10])
         reqfields = fields[11].split(' ')
         if len(reqfields) >= 2:
             self.method = reqfields[0]
@@ -177,6 +215,47 @@ class LogLine:
         self.path = u.path
         self.useragent = fields[12]
         self.encryption = fields[13]
+
+
+class CfLogLine:
+    """CfLogLine"""
+
+    @staticmethod
+    def get_delimiter():
+        return '\t'
+
+    @staticmethod
+    def get_gzipped():
+        return True
+
+    @staticmethod
+    def get_isdataline():
+        return lambda row: not row[0].startswith('#')
+
+    def __init__(self, fields):
+        self.utctime = datetime.strptime(fields[0] + "T" + fields[1], '%Y-%m-%dT%H:%M:%S')
+        self.edge_location = fields[2]
+        self.responsebytes = fields[3]
+        self.remoteip = fields[4]
+        self.method = fields[5]
+        self.server = fields[6]
+        self.path = fields[7]
+        self.responsecode = int(fields[8])
+        self.referrer = fields[9]
+        self.useragent = fields[10]
+        self.querystring = fields[11]
+        self.cookie = fields[12]
+        self.edge_resulttype = fields[13]
+        self.requestid = fields[14]
+        self.hostname = fields[15]
+        self.protocol = fields[16]
+        self.request_bytes = int(fields[17])
+        self.timetaken = float(fields[18])
+        # self.forwardedfor = fields[19]
+        # self.sslprotocol = fields[20]
+        # self.sslcipher = fields[21]
+        self.edge_responseresulttype = fields[22]
+        self.protocol_version = fields[23]
 
 
 
