@@ -50,10 +50,11 @@ class LogDataFrame:
             loglines = [] 
             filelist = [f for f in os.listdir(fullfoldername) if os.path.isfile(os.path.join(fullfoldername, f))]
             for filename in filelist: 
-                print filename
                 with opener(os.path.join(fullfoldername, filename), 'rb') as buf:
                     self.append_lines(buf, loglines, loglinefilter)
-                return self.get_df_from_loglines(loglines)
+            return self.get_df_from_loglines(loglines)
+        else:
+            print "Could not find folder {0}".format(fullfoldername)
 
 
 
@@ -113,6 +114,15 @@ class LogFileList:
         self.s3res = s3res
         self.bucket = bucket
         self.strictreftime = strictreftime
+
+    def get_recents_alb(self, distribution, refdate = None, lblogfolder = None):
+        s3foldertemplate = "loadbalancers/{loadbalancer}/AWSLogs/{account}/elasticloadbalancing/{region}/{dt.year:0>4}/{dt.month:0>2}/{dt.day:0>2}/"
+        s3filekeyroottemplate = "{account}_elasticloadbalancing_{region}_app.{loadbalancer}"
+        def folderpref(dt): return s3foldertemplate.format(dt = dt, loadbalancer = logfolder, account = self.account, region = self.region) 
+        def filepref(dt): return s3filekeyroottemplate.format(dt = dt, loadbalancer = lbname, account = self.account, region = self.region ) 
+        def prefix(dt): return folderpref(dt) + filepref(dt) 
+        return self.get_recents(prefix, refdate)
+
 
     def get_recents_cloudfront(self, distribution, refdate=None, cflogfolder = None):
         folderprefix = (cflogfolder + "/") if cflogfolder != None else ""
@@ -217,6 +227,53 @@ class LogLine:
         self.encryption = fields[13]
 
 
+class AlbLogLine:
+    """AblLogLine"""
+
+    @staticmethod
+    def get_delimiter():
+        return ' '
+
+    @staticmethod
+    def get_gzipped():
+        return True
+
+    @staticmethod
+    def get_isdataline():
+        return lambda row: True
+
+    def __init__(self, fields):
+        self.protocoltype = fields[0]
+        self.utctime = datetime.strptime(fields[1], '%Y-%m-%dT%H:%M:%S.%fZ')
+        self.loadbalancer = fields[2]
+        (self.remoteip, self.remoteport) = fields[3].split(':')
+        if (fields[3] != '-'):
+            (self.hostip, self.hostport) = fields[3].split(':')
+        else:
+            (self.hostip, self.hostport) = ("-", "-1")
+        self.time1 = float(fields[5]) 
+        self.servertime = float(fields[6]) if float(fields[6]) > 0 else None
+        self.time2 = float(fields[7])
+        self.timetaken = (self.time1 + self.servertime + self.time2) if self.servertime > 0 else self.servertime
+        self.responsecode = int(fields[8])
+        self.responsebytes = int(fields[11])
+        reqfields = fields[12].split(' ')
+        if len(reqfields) >= 2:
+            self.method = reqfields[0]
+            self.url = reqfields[1]
+            if (len(reqfields) >=3):
+                self.protocol = reqfields[2]
+            else:
+                self.protocol = "unknown"
+        u = urlparse(self.url)
+        self.hostname = u.hostname
+        self.path = u.path 
+        self.useragent = fields[13]
+        self.encryption = fields[14]
+        self.encryptionprotocol = fields[15]
+        self.targetgroup = fields[16]
+        self.traceid = fields[17]
+
 class CfLogLine:
     """CfLogLine"""
 
@@ -256,6 +313,5 @@ class CfLogLine:
         # self.sslcipher = fields[21]
         self.edge_responseresulttype = fields[22]
         self.protocol_version = fields[23]
-
 
 
