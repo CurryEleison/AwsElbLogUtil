@@ -107,13 +107,24 @@ class LogFileList:
     """LogFileList"""
 
     def __init__(self, s3res, account = None, region = 'eu-west-1', 
-            bucket = "123logging", minimumfiles = 5, strictreftime = False):
+            bucket = "123logging", minimumfiles = 5, strictreftime = False,
+            lbtype = 'elb'):
         self.account = account if account != None else self.get_awsacctno()
         self.region = region
         self.minimumfiles = minimumfiles
         self.s3res = s3res
         self.bucket = bucket
         self.strictreftime = strictreftime
+        self.lbtype = lbtype
+
+    def get_recents(self, distribution, refdate = None, logfolder = None):
+        if (self.lbtype == 'alb'):
+            return self.get_recents_alb(distribution, refdate, logfolder)
+        elif (self.lbtype == 'cf'):
+            return self.get_recents_cloudfront(distribution, refdate, logfolder)
+        else:
+            return self.get_recents_elb(distribution, refdate, logfolder)
+
 
     def get_recents_alb(self, distribution, refdate = None, lblogfolder = None):
         s3foldertemplate = "loadbalancers/{loadbalancer}/AWSLogs/{account}/elasticloadbalancing/{region}/{dt.year:0>4}/{dt.month:0>2}/{dt.day:0>2}/"
@@ -121,13 +132,13 @@ class LogFileList:
         def folderpref(dt): return s3foldertemplate.format(dt = dt, loadbalancer = logfolder, account = self.account, region = self.region) 
         def filepref(dt): return s3filekeyroottemplate.format(dt = dt, loadbalancer = lbname, account = self.account, region = self.region ) 
         def prefix(dt): return folderpref(dt) + filepref(dt) 
-        return self.get_recents(prefix, refdate)
+        return self._get_recents(prefix, refdate)
 
 
     def get_recents_cloudfront(self, distribution, refdate=None, cflogfolder = None):
         folderprefix = (cflogfolder + "/") if cflogfolder != None else ""
         def prefix(dt): return "{foldpref}{filepref}.{dt.year:0>4}-{dt.month:0>2}-{dt.day:0>2}-{dt.hour:0>2}".format(dt = dt, foldpref = folderprefix, filepref = distribution)
-        return self.get_recents(prefix, refdate)
+        return self._get_recents(prefix, refdate)
 
 
     def get_recents_elb(self, lbname, refdate=None, lblogfolder = None):
@@ -137,10 +148,10 @@ class LogFileList:
         def folderpref(dt): return s3foldertemplate.format(dt = dt, loadbalancer = logfolder, account = self.account, region = self.region)
         def filepref(dt): return s3filekeyroottemplate.format(dt = dt, loadbalancer = lbname, account = self.account, region = self.region )
         def prefix(dt): return folderpref(dt) + filepref(dt)
-        return self.get_recents(prefix, refdate)
+        return self._get_recents(prefix, refdate)
 
 
-    def get_recents(self, prefixer, refdate=None):
+    def _get_recents(self, prefixer, refdate=None):
         utc = UTC()
         allitems = []
         checkedkeys = set()
