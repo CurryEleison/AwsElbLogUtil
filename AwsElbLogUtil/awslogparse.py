@@ -119,14 +119,15 @@ class LogFileList:
 
     def get_recents(self, distribution, refdate = None, logfolder = None):
         if (self.lbtype == 'alb'):
-            return self.get_recents_alb(distribution, refdate, logfolder)
+            return self.get_recents_alb(distribution, refdate = refdate, lblogfolder = logfolder)
         elif (self.lbtype == 'cf'):
-            return self.get_recents_cloudfront(distribution, refdate, logfolder)
+            return self.get_recents_cloudfront(distribution, refdate = refdate, cflogfolder = logfolder)
         else:
-            return self.get_recents_elb(distribution, refdate, logfolder)
+            return self.get_recents_elb(distribution, refdate = refdate, lblogfolder = logfolder)
 
 
-    def get_recents_alb(self, distribution, refdate = None, lblogfolder = None):
+    def get_recents_alb(self, lbname, refdate = None, lblogfolder = None):
+        logfolder = lblogfolder if lblogfolder != None else lbname
         s3foldertemplate = "loadbalancers/{loadbalancer}/AWSLogs/{account}/elasticloadbalancing/{region}/{dt.year:0>4}/{dt.month:0>2}/{dt.day:0>2}/"
         s3filekeyroottemplate = "{account}_elasticloadbalancing_{region}_app.{loadbalancer}"
         def folderpref(dt): return s3foldertemplate.format(dt = dt, loadbalancer = logfolder, account = self.account, region = self.region) 
