@@ -240,7 +240,7 @@ class LogLine:
 
 
 class AlbLogLine:
-    """AblLogLine"""
+    """AlbLogLine"""
 
     @staticmethod
     def get_delimiter():
